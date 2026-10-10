@@ -10,21 +10,33 @@
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; }
         .busca { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
-        .busca input[type="text"] { padding: 8px; min-width: 260px; flex: 1; }
+        .busca input[type="text"] { padding: 8px; min-width: 220px; flex: 1; }
         .busca select, .busca button { padding: 8px; }
-        .opcoes { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 8px; font-size: 14px; }
+        .opcoes { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 8px; font-size: 14px; align-items: center; }
         .ponto { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 4px; }
         .ponto.parceiro { border: 2px solid #222; width: 10px; height: 10px; }
         #contador { font-size: 14px; margin-bottom: 8px; }
+        #aviso-limite {
+            color: #9a3412;
+            background: #fff7ed;
+            border-radius: 6px;
+            padding: 8px;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+        #aviso-limite:empty {
+            display: none;
+        }
         #mapa { height: 550px; width: 100%; border-radius: 12px; }
     </style>
 </head>
 <body>
     <h1>Fornecedores de insumos e pontos de doação</h1>
-    <p>Pesquise uma cidade, bairro ou endereço para ver o que existe por perto.</p>
+    <p>Pesquise uma cidade, bairro ou endereço e consulte a distância exata até o seu restaurante.</p>
 
     <div class="busca">
-        <input type="text" id="campo-busca" placeholder="Ex.: Boa Viagem, Recife">
+        <input type="text" id="campo-busca" placeholder="Local (Ex.: Boa Viagem, Recife)">
+        <input type="text" id="campo-insumo" placeholder="Filtrar insumo (Ex.: ovos, peixe, hortaliças)">
         <select id="campo-raio">
             <option value="2000">2 km</option>
             <option value="5000" selected>5 km</option>
@@ -35,23 +47,61 @@
     </div>
 
     <div class="opcoes">
-        <label><input type="checkbox" id="chk-fornecedor" checked>
-            <span class="ponto" style="background:#2e7d32"></span>Fornecedores de insumos</label>
-        <label><input type="checkbox" id="chk-doacao" checked>
-            <span class="ponto" style="background:#ef6c00"></span>Pontos de doação</label>
-        <label><input type="checkbox" id="chk-parceiro" checked>
+        <label>
+            <input type="checkbox" id="chk-fornecedor" checked>
+            <span class="ponto" style="background:#2e7d32"></span>
+            Fornecedores de insumos
+        </label>
+
+        <label>
+            <input type="checkbox" id="chk-doacao" checked>
+            <span class="ponto" style="background:#ef6c00"></span>
+            Todos os pontos de doação
+        </label>
+
+        <label>
+            <input type="checkbox" id="chk-banco" checked>
+            Bancos de alimentos
+        </label>
+
+        <label>
+            <input type="checkbox" id="chk-social" checked>
+            Instituições sociais
+        </label>
+
+        <label>
+            <input type="checkbox" id="chk-comunitario" checked>
+            Centros comunitários
+        </label>
+
+        <label>
+            <input type="checkbox" id="chk-igreja">
+            Igrejas e locais de culto
+        </label>
+
+        <label>
+            <input type="checkbox" id="chk-parceiro" checked>
             Parceiros verificados:
-            <span class="ponto parceiro" style="background:#6a1b9a"></span>produtor
-            <span class="ponto parceiro" style="background:#00838f"></span>entidade</label>
+            <span class="ponto parceiro" style="background:#6a1b9a"></span> produtor
+            <span class="ponto parceiro" style="background:#00838f"></span> entidade
+        </label>
     </div>
 
     <div id="contador">Digite um local e clique em Buscar.</div>
+    <div id="aviso-limite" role="status"></div>
     <div id="mapa"></div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 
     <script>
-        const mapa = L.map("mapa").setView([-14.2, -51.9], 4);
+        // Coordenadas fixas do Restaurante (Bairro do Recife / Marco Zero)
+        const RESTAURANTE = {
+            nome: "Nosso Restaurante ESG",
+            lat: -8.0631,
+            lng: -34.8711
+        };
+
+        const mapa = L.map("mapa").setView([RESTAURANTE.lat, RESTAURANTE.lng], 12);
 
         L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
             attribution: "&copy; OpenStreetMap"
@@ -59,11 +109,19 @@
 
         const camada = L.layerGroup().addTo(mapa);
         const campoBusca = document.getElementById("campo-busca");
+        const campoInsumo = document.getElementById("campo-insumo");
         const campoRaio = document.getElementById("campo-raio");
+        
         const chkFornecedor = document.getElementById("chk-fornecedor");
         const chkDoacao = document.getElementById("chk-doacao");
+        const chkBanco = document.getElementById("chk-banco");
+        const chkSocial = document.getElementById("chk-social");
+        const chkComunitario = document.getElementById("chk-comunitario");
+        const chkIgreja = document.getElementById("chk-igreja");
         const chkParceiro = document.getElementById("chk-parceiro");
+        
         const contador = document.getElementById("contador");
+        const avisoLimite = document.getElementById("aviso-limite");
 
         const CORES = { fornecedor: "#2e7d32", doacao: "#ef6c00" };
         const CORES_PARCEIRO = { produtor: "#6a1b9a", entidade: "#00838f" };
@@ -72,17 +130,26 @@
         let centro = null;
         let locais = [];
         let parceiros = [];
+        let avisoAtual = "";
 
-        // Evita que texto vindo da API seja interpretado como HTML
         function escapar(texto) {
             const div = document.createElement("div");
             div.textContent = texto ?? "";
             return div.innerHTML;
         }
 
+        // Calcula a distância entre duas coordenadas em km
+        function calcularDistanciaKm(lat1, lon1, lat2, lon2) {
+            const p1 = L.latLng(lat1, lon1);
+            const p2 = L.latLng(lat2, lon2);
+            return (p1.distanceTo(p2) / 1000).toFixed(2);
+        }
+
         function popup(local) {
+            const dist = calcularDistanciaKm(RESTAURANTE.lat, RESTAURANTE.lng, local.latitude, local.longitude);
             let html = `<strong>${escapar(local.nome)}</strong><br>
-                <em>${ROTULOS[local.categoria]} · ${escapar(local.tipo)}</em>`;
+                <em>${ROTULOS[local.categoria]} · ${escapar(local.tipo)}</em><br>
+                <b>📍 Distância do Restaurante:</b> ${dist} km`;
             if (local.endereco) html += `<br>${escapar(local.endereco)}`;
             if (local.telefone) html += `<br>Tel.: ${escapar(local.telefone)}`;
             if (/^https?:\/\//i.test(local.site || "")) {
@@ -92,8 +159,10 @@
         }
 
         function popupParceiro(p) {
+            const dist = calcularDistanciaKm(RESTAURANTE.lat, RESTAURANTE.lng, p.latitude, p.longitude);
             let html = `<strong>${escapar(p.nome)}</strong><br>
                 <em>${escapar(p.tipo_rotulo)} · parceiro verificado</em><br>
+                <b>📍 Distância do Restaurante:</b> ${dist} km<br>
                 ${escapar(p.cidade)} - ${escapar(p.estado)}`;
             if (p.produtos.length) html += `<br><b>Produtos:</b> ${escapar(p.produtos.join(", "))}`;
             if (p.aceita_doacao) html += `<br><b>Aceita doações de alimentos</b>`;
@@ -104,9 +173,18 @@
 
         function desenhar(ajustarMapa) {
             camada.clearLayers();
+
+            // Ponto fixo do restaurante no mapa
+            const posRestaurante = L.latLng(RESTAURANTE.lat, RESTAURANTE.lng);
+            L.circleMarker(posRestaurante, {
+                radius: 12, color: "#d32f2f", weight: 3,
+                fillColor: "#ff1744", fillOpacity: 1
+            }).addTo(camada).bindPopup(`<strong>🏬 ${RESTAURANTE.nome}</strong><br>Localização Base do Restaurante`);
+
             if (!centro) return;
 
             const pontoCentral = L.latLng(centro.latitude, centro.longitude);
+            const termoInsumo = campoInsumo.value.trim().toLowerCase();
 
             L.marker(pontoCentral)
                 .addTo(camada)
@@ -116,10 +194,22 @@
                 radius: centro.raio, color: "#1976d2", weight: 1, fillOpacity: 0.04
             }).addTo(camada);
 
-            const visiveis = locais.filter(l =>
-                (l.categoria === "fornecedor" && chkFornecedor.checked) ||
-                (l.categoria === "doacao" && chkDoacao.checked)
-            );
+            const visiveis = locais.filter(local => {
+                if (local.categoria === "fornecedor") {
+                    return chkFornecedor.checked;
+                }
+
+                if (local.categoria === "doacao") {
+                    if (!chkDoacao.checked) return false;
+
+                    if (local.tipo === "Banco de alimentos") return chkBanco.checked;
+                    if (local.tipo === "Instituição social") return chkSocial.checked;
+                    if (local.tipo === "Centro comunitário") return chkComunitario.checked;
+                    if (local.tipo === "Igreja" || local.tipo === "Local de culto") return chkIgreja.checked;
+                }
+
+                return false;
+            });
 
             visiveis.forEach(local => {
                 L.circleMarker([local.latitude, local.longitude], {
@@ -128,10 +218,18 @@
                 }).addTo(camada).bindPopup(popup(local));
             });
 
-            // Parceiros cadastrados dentro do raio pesquisado
             const parceirosVisiveis = chkParceiro.checked
-                ? parceiros.filter(p =>
-                    pontoCentral.distanceTo([p.latitude, p.longitude]) <= centro.raio)
+                ? parceiros.filter(p => {
+                    const dentroDoRaio = pontoCentral.distanceTo([p.latitude, p.longitude]) <= centro.raio;
+                    if (!dentroDoRaio) return false;
+
+                    if (termoInsumo) {
+                        const temProduto = p.produtos.some(prod => prod.toLowerCase().includes(termoInsumo));
+                        const nomeMatch = p.nome.toLowerCase().includes(termoInsumo);
+                        return temProduto || nomeMatch;
+                    }
+                    return true;
+                })
                 : [];
 
             parceirosVisiveis.forEach(p => {
@@ -143,9 +241,13 @@
 
             const nF = visiveis.filter(l => l.categoria === "fornecedor").length;
             const nD = visiveis.length - nF;
+            
+            let textoFiltro = termoInsumo ? ` filtrados por "${termoInsumo}"` : "";
             contador.textContent =
                 `${nF} fornecedor(es), ${nD} ponto(s) de doação e ` +
-                `${parceirosVisiveis.length} parceiro(s) verificado(s) em ${centro.nome}`;
+                `${parceirosVisiveis.length} parceiro(s) verificado(s)${textoFiltro} em ${centro.nome}`;
+
+            avisoLimite.textContent = avisoAtual;
 
             if (ajustarMapa) mapa.fitBounds(circulo.getBounds());
         }
@@ -156,6 +258,7 @@
                 if (!resposta.ok) throw new Error("Erro " + resposta.status);
                 const dados = await resposta.json();
                 parceiros = dados.parceiros;
+                desenhar(false);
             } catch (erro) {
                 console.error("Não foi possível carregar os parceiros:", erro);
             }
@@ -163,19 +266,23 @@
 
         async function buscar() {
             const q = campoBusca.value.trim();
+            const insumo = campoInsumo.value.trim();
+
             if (!q) {
                 contador.textContent = "Digite uma cidade, bairro ou endereço.";
                 return;
             }
             contador.textContent = "Buscando...";
+            avisoLimite.textContent = "";
+
             try {
-                const resposta = await fetch(
-                    `/api/locais/?q=${encodeURIComponent(q)}&raio=${campoRaio.value}`
-                );
+                const url = `/api/locais/?q=${encodeURIComponent(q)}&raio=${campoRaio.value}&insumo=${encodeURIComponent(insumo)}`;
+                const resposta = await fetch(url);
                 const dados = await resposta.json();
                 if (!resposta.ok) throw new Error(dados.erro || "Erro " + resposta.status);
                 centro = dados.centro;
                 locais = dados.locais;
+                avisoAtual = dados.aviso || "";
                 desenhar(true);
             } catch (erro) {
                 console.error(erro);
@@ -185,10 +292,17 @@
 
         document.getElementById("botao-buscar").addEventListener("click", buscar);
         campoBusca.addEventListener("keydown", e => { if (e.key === "Enter") buscar(); });
+        campoInsumo.addEventListener("keydown", e => { if (e.key === "Enter") buscar(); });
+
         chkFornecedor.addEventListener("change", () => desenhar(false));
         chkDoacao.addEventListener("change", () => desenhar(false));
+        chkBanco.addEventListener("change", () => desenhar(false));
+        chkSocial.addEventListener("change", () => desenhar(false));
+        chkComunitario.addEventListener("change", () => desenhar(false));
+        chkIgreja.addEventListener("change", () => desenhar(false));
         chkParceiro.addEventListener("change", () => desenhar(false));
 
+        desenhar(false);
         carregarParceiros();
     </script>
 </body>

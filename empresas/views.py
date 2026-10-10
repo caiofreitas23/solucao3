@@ -3,6 +3,7 @@ import logging
 import urllib.parse
 import urllib.request
 
+from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
 from django.http import JsonResponse
 from django.shortcuts import render
@@ -10,6 +11,7 @@ from django.shortcuts import render
 from .models import EmpresaESG, Parceiro
 
 
+@login_required
 def mapa_esg(request):
     return render(request, "guardiao/mapa_esg.html")
 
@@ -137,6 +139,8 @@ def _endereco(tags):
 
 def api_locais(request):
     q = request.GET.get("q", "").strip()
+    insumo = request.GET.get("insumo", "").strip().lower()
+
     if not q:
         return JsonResponse({"erro": "Informe um local."}, status=400)
     try:
@@ -145,7 +149,7 @@ def api_locais(request):
         raio = 5000
     raio = max(500, min(raio, 20000))
 
-    chave = f"locais:{q.lower()}:{raio}"
+    chave = f"locais:{q.lower()}:{raio}:{insumo}"
     resultado = cache.get(chave)
     if resultado:
         return JsonResponse(resultado)
@@ -159,15 +163,21 @@ def api_locais(request):
             return JsonResponse({"erro": "Local não encontrado."}, status=404)
         lat, lon = float(geo[0]["lat"]), float(geo[0]["lon"])
 
-        consulta = f"""
+        limite = 300
+        consulta_fornecedores = f"""
         [out:json][timeout:25];
-        (
-          nwr(around:{raio},{lat},{lon})["shop"~"^(farm|greengrocer|butcher|seafood|dairy|wholesale)$"];
-          nwr(around:{raio},{lat},{lon})["amenity"~"^(marketplace|place_of_worship|social_facility|community_centre)$"];
-        );
-        out center 300;
+        nwr(around:{raio},{lat},{lon})["shop"~"^(farm|greengrocer|butcher|seafood|dairy|wholesale)$"];
+        out center {limite + 1};
         """
-        dados = _overpass(consulta)
+        dados_fornecedores = _overpass(consulta_fornecedores)
+
+        consulta_doacao = f"""
+        [out:json][timeout:25];
+        nwr(around:{raio},{lat},{lon})["amenity"~"^(marketplace|place_of_worship|social_facility|community_centre)$"];
+        out center {limite + 1};
+        """
+        dados_doacao = _overpass(consulta_doacao)
+
     except Exception:
         logger.exception("Falha na busca de locais para %r", q)
         return JsonResponse(
@@ -175,16 +185,38 @@ def api_locais(request):
             status=502,
         )
 
+    elementos_fornecedores = dados_fornecedores.get("elements", [])
+    elementos_doacao = dados_doacao.get("elements", [])
+
+    limite_fornecedores = len(elementos_fornecedores) > limite
+    limite_doacao = len(elementos_doacao) > limite
+
+    elementos = elementos_fornecedores[:limite] + elementos_doacao[:limite]
+
     locais = []
-    for el in dados.get("elements", []):
+    ids_encontrados = set()
+    for el in elementos:
         tags = el.get("tags", {})
         categoria, tipo = _classificar(tags)
         ponto = el if "lat" in el else el.get("center")
         if not categoria or not ponto:
             continue
+
+        nome = tags.get("name") or tipo
+
+        if insumo and categoria == "fornecedor":
+            texto_busca = f"{nome} {tipo} {tags.get('description', '')} {tags.get('craft', '')}".lower()
+            if insumo not in texto_busca:
+                continue
+
+        identificador = f'{el["type"]}{el["id"]}'
+        if identificador in ids_encontrados:
+            continue
+        ids_encontrados.add(identificador)
+
         locais.append({
-            "id": f'{el["type"]}{el["id"]}',
-            "nome": tags.get("name") or tipo,
+            "id": identificador,
+            "nome": nome,
             "categoria": categoria,
             "tipo": tipo,
             "latitude": ponto["lat"],
@@ -202,6 +234,18 @@ def api_locais(request):
             "raio": raio,
         },
         "locais": locais,
+        "limites": {
+            "fornecedores": limite_fornecedores,
+            "doacao": limite_doacao,
+            "limite_por_consulta": limite,
+        },
+        "aviso": (
+            "Uma ou mais consultas atingiram o limite. "
+            "Pode haver outros locais não exibidos. "
+            "Reduza o raio para ver resultados mais detalhados."
+            if limite_fornecedores or limite_doacao
+            else ""
+        ),
     }
     cache.set(chave, resultado, 3600)
     return JsonResponse(resultado)
