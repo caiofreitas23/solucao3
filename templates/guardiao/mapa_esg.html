@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mapa ESG Brasil</title>
+
+    <link
+        rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css"
+    >
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+
+        .filtros {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+        }
+
+        .filtros label {
+            font-size: 14px;
+        }
+
+        .filtros select {
+            padding: 6px;
+            margin-left: 4px;
+        }
+
+        #contador {
+            font-size: 14px;
+            margin-bottom: 8px;
+        }
+
+        #mapa {
+            height: 550px;
+            width: 100%;
+            border-radius: 12px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Mapa de Empresas ESG do Brasil</h1>
+    <p>Clique nos marcadores para visualizar as informações.</p>
+
+    <div class="filtros">
+        <label>
+            Estado:
+            <select id="filtro-estado">
+                <option value="">Todos</option>
+            </select>
+        </label>
+        <label>
+            Setor:
+            <select id="filtro-setor">
+                <option value="">Todos</option>
+            </select>
+        </label>
+    </div>
+
+    <div id="contador"></div>
+    <div id="mapa"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+
+    <script>
+        const mapa = L.map("mapa").setView([-14.2, -51.9], 4);
+
+        L.tileLayer(
+            "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+            {
+                attribution: "&copy; OpenStreetMap"
+            }
+        ).addTo(mapa);
+
+        const camadaMarcadores = L.layerGroup().addTo(mapa);
+        const selectEstado = document.getElementById("filtro-estado");
+        const selectSetor = document.getElementById("filtro-setor");
+        const contador = document.getElementById("contador");
+
+        let todasEmpresas = [];
+
+        // Evita que texto cadastrado no banco seja interpretado como HTML
+        function escapar(texto) {
+            const div = document.createElement("div");
+            div.textContent = texto ?? "";
+            return div.innerHTML;
+        }
+
+        function preencherSelect(select, valores) {
+            [...new Set(valores)].sort().forEach(valor => {
+                const opcao = document.createElement("option");
+                opcao.value = valor;
+                opcao.textContent = valor;
+                select.appendChild(opcao);
+            });
+        }
+
+        function desenharMarcadores() {
+            camadaMarcadores.clearLayers();
+
+            const estado = selectEstado.value;
+            const setor = selectSetor.value;
+
+            const filtradas = todasEmpresas.filter(e =>
+                (!estado || e.estado === estado) &&
+                (!setor || e.setor === setor)
+            );
+
+            filtradas.forEach(empresa => {
+                L.marker([empresa.latitude, empresa.longitude])
+                    .addTo(camadaMarcadores)
+                    .bindPopup(`
+                        <strong>${escapar(empresa.nome)}</strong><br>
+                        ${escapar(empresa.cidade)} - ${escapar(empresa.estado)}<br>
+                        <em>Setor: ${escapar(empresa.setor)}</em><br>
+                        <small>CNPJ: ${escapar(empresa.cnpj)}</small>
+                        ${empresa.evidencias_esg
+                            ? `<hr><b>Evidências ESG:</b><br>${escapar(empresa.evidencias_esg)}`
+                            : ""}
+                    `);
+            });
+
+            contador.textContent = `${filtradas.length} empresa(s) exibida(s)`;
+        }
+
+        fetch("/api/empresas/")
+            .then(resposta => {
+                if (!resposta.ok) {
+                    throw new Error("Erro HTTP " + resposta.status);
+                }
+                return resposta.json();
+            })
+            .then(dados => {
+                todasEmpresas = dados.empresas;
+                preencherSelect(selectEstado, todasEmpresas.map(e => e.estado));
+                preencherSelect(selectSetor, todasEmpresas.map(e => e.setor));
+                desenharMarcadores();
+            })
+            .catch(erro => {
+                console.error("Erro ao carregar empresas:", erro);
+                contador.textContent = "Não foi possível carregar as empresas.";
+            });
+
+        selectEstado.addEventListener("change", desenharMarcadores);
+        selectSetor.addEventListener("change", desenharMarcadores);
+    </script>
+</body>
+</html>
